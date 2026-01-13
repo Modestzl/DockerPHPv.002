@@ -1,0 +1,139 @@
+version: '3.8'
+
+# Сеть для изоляции сервисов
+networks:
+  frontend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+  backend:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16
+
+# Тома для хранения данных
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  app_data:
+    driver: local
+
+services:
+  # HAProxy - балансировщик нагрузки
+  haproxy:
+    image: haproxy:2.8-alpine
+    container_name: haproxy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - ./ssl/certs:/usr/local/etc/haproxy/certs:ro
+    networks:
+      - frontend
+    depends_on:
+      - nginx
+
+  # Nginx с поддержкой HTTP/2 и оптимизациями
+  nginx:
+    build: ./nginx
+    container_name: nginx
+    restart: unless-stopped
+    expose:
+      - "8080"
+    volumes:
+      - ./app/src:/var/www/html:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./logs/nginx:/var/log/nginx
+    networks:
+      - frontend
+      - backend
+    depends_on:
+      - php
+    environment:
+      - NGINX_ENV=production
+
+  # PHP-FPM с оптимизациями для высоких нагрузок
+  php:
+    build: ./php
+    container_name: php-fpm
+    restart: unless-stopped
+    expose:
+      - "9000"
+    volumes:
+      - ./app/src:/var/www/html
+      - ./php/php.ini:/usr/local/etc/php/php.ini:ro
+      - ./php/opcache.ini:/usr/local/etc/php/conf.d/opcache.ini:ro
+      - ./logs/php:/var/log/php
+    networks:
+      - backend
+    environment:
+      - PHP_ENV=production
+      - PHP_OPCACHE_ENABLE=1
+    healthcheck:
+      test: ["CMD", "php-fpm", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis для кэширования и сессий
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: unless-stopped
+    command: redis-server /usr/local/etc/redis/redis.conf
+    volumes:
+      - ./redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis_data:/data
+    networks:
+      - backend
+    ports:
+      - "6379:6379"
+
+  # MySQL с оптимизациями
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    restart: unless-stopped
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --innodb-buffer-pool-size=2G
+      - --max-connections=1000
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/my.cnf:/etc/mysql/conf.d/my.cnf:ro
+    networks:
+      - backend
+    environment:
+      - MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD}
+      - MYSQL_DATABASE=${DB_NAME}
+      - MYSQL_USER=${DB_USER}
+      - MYSQL_PASSWORD=${DB_PASSWORD}
+    ports:
+      - "3306:3306"
+
+  # Node exporter для мониторинга
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - backend
+    ports:
+      - "9100:9100"
