@@ -1,0 +1,66 @@
+# Папки зависимостей
+/vendor/
+/node_modules/
+
+# Файлы окружения
+.env
+.env.local
+.env.*.local
+
+# Логи
+*.log
+log/
+logs/
+
+# Системные файлы
+.DS_Store
+Thumbs.db
+
+# IDE файлы
+/.idea/
+/.vscode/
+*.swp
+*.swo
+*~
+
+# Composer
+composer.phar
+/composer.lock
+/vendor/
+
+# PHPUnit
+/phpunit.xml
+.phpunit.result.cache
+
+# Кэш и сгенерированные файлы
+/cache/
+/tmp/
+/var/
+/build/
+
+# Конфигурация веб-сервера
+.htaccess
+web.config
+
+# Деплой
+/deploy/
+*.tar.gz
+*.zip
+
+# Пользовательские директории
+/uploads/
+/storage/
+/public/storage
+
+# Сессии
+/sessions/
+
+# Файлы тестов
+/.phpunit.cache
+
+# Докер
+docker-compose.override.yml
+
+# ОС специфичные файлы
+ehthumbs.db
+Icon?
