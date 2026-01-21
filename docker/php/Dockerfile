@@ -1,150 +1,103 @@
-# Многоступенчатая сборка для уменьшения итогового размера образа
-# Этап 1: Сборка зависимостей и компиляция расширений
-FROM php:8.2-fpm-alpine AS builder
+# Многостадийная сборка для оптимизации
+FROM php:8.3-fpm-alpine AS builder
 
-# Устанавливаем системные зависимости, необходимые для сборки PHP-расширений
-# Добавляем --no-cache для уменьшения размера слоя
+# Устанавливаем системные зависимости
 RUN apk add --no-cache \
-    # Для gd, imagick, iconv \
+    git \
+    curl \
+    libzip-dev \
     libpng-dev \
     libjpeg-turbo-dev \
     freetype-dev \
-    # Для zip расширения \
-    libzip-dev \
-    # Для intl расширения \
     icu-dev \
-    # Для PostgreSQL \
+    oniguruma-dev \
     postgresql-dev \
-    # Для Redis \
-    redis \
-    # Для компиляции \
-    $PHPIZE_DEPS \
-    # Для Composer \
-    git \
-    unzip
+    libxml2-dev \
+    libxslt-dev \
+    unzip \
+    openssl-dev \
+    g++ \
+    make \
+    autoconf
 
-# Устанавливаем и настраиваем PHP расширения
-# Используем docker-php-ext-install для стандартных расширений
-RUN docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install \
-        gd \
+# Устанавливаем расширения PHP
+RUN docker-php-ext-configure gd --with-freetype --with-jpeg && \
+    docker-php-ext-configure intl && \
+    docker-php-ext-install \
         pdo_mysql \
         pdo_pgsql \
-        intl \
+        mysqli \
         zip \
-        opcache \
+        gd \
+        intl \
+        mbstring \
+        exif \
+        pcntl \
         bcmath \
+        soap \
         sockets \
-        exif
+        opcache \
+        xsl
 
-# Устанавливаем PECL расширения
-RUN pecl install \
-        redis \
-        apcu \
-        xdebug \
-    && docker-php-ext-enable \
-        redis \
-        apcu
+# Устанавливаем Redis и другие PECL расширения
+RUN pecl install redis && \
+    pecl install apcu && \
+    pecl install igbinary && \
+    docker-php-ext-enable redis apcu igbinary
 
-# Копируем специфические конфигурации PHP
-COPY docker/php/conf.d/ /usr/local/etc/php/conf.d/
+# Устанавливаем Composer
+COPY --from=composer:latest /usr/bin/composer /usr/bin/composer
 
-# Устанавливаем Composer глобально
-COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+# Финальный образ
+FROM php:8.3-fpm-alpine
 
-# Устанавливаем рабочий каталог
-WORKDIR /var/www
+# Копируем установленные расширения из builder
+COPY --from=builder /usr/local/etc/php/conf.d/ /usr/local/etc/php/conf.d/
+COPY --from=builder /usr/local/lib/php/extensions/ /usr/local/lib/php/extensions/
 
-# Копируем только файлы, необходимые для установки зависимостей
-COPY composer.json composer.lock ./
-
-# Устанавливаем зависимости без dev-зависимостей для production
-# Используем флаги для оптимизации и безопасности
-RUN composer install \
-    --no-dev \
-    --prefer-dist \
-    --no-autoloader \
-    --no-scripts \
-    --no-progress \
-    --optimize-autoloader \
-    --ignore-platform-reqs
-
-# Этап 2: Production образ
-FROM php:8.2-fpm-alpine
-
-# Метаданные образа
-LABEL maintainer="your-team@example.com" \
-      version="1.0" \
-      description="Production PHP-FPM image"
-
-# Создаем не-root пользователя для безопасности
-#RUN addgroup -g 1000 appuser && \
-#    adduser -u 1000 -G appuser -s /bin/sh -D appuser
-
-# Устанавливаем только runtime зависимости (без dev пакетов)
+# Устанавливаем системные зависимости для продакшена
 RUN apk add --no-cache \
-    # Runtime зависимости для PHP расширений \
+    libzip \
     libpng \
     libjpeg-turbo \
     freetype \
-    libzip \
     icu \
+    oniguruma \
     postgresql-libs \
-    # Системные утилиты \
-    supervisor \
+    libxml2 \
+    libxslt \
     tzdata \
-    # Для healthcheck \
-    curl \
-    # Для отладки (можно удалить в production) \
-    busybox-extras
+    supervisor
 
-# Копируем скомпилированные расширения из builder stage
-COPY --from=builder /usr/local/etc/php /usr/local/etc/php
-COPY --from=builder /usr/local/lib/php/extensions/ /usr/local/lib/php/extensions/
+# Настройка PHP-FPM для высоких нагрузок
+RUN echo "pm = dynamic" >> /usr/local/etc/php-fpm.d/zz-docker.conf && \
+    echo "pm.max_children = 50" >> /usr/local/etc/php-fpm.d/zz-docker.conf && \
+    echo "pm.start_servers = 5" >> /usr/local/etc/php-fpm.d/zz-docker.conf && \
+    echo "pm.min_spare_servers = 5" >> /usr/local/etc/php-fpm.d/zz-docker.conf && \
+    echo "pm.max_spare_servers = 35" >> /usr/local/etc/php-fpm.d/zz-docker.conf && \
+    echo "pm.max_requests = 500" >> /usr/local/etc/php-fpm.d/zz-docker.conf
 
-# Настраиваем PHP-FPM пулы
-COPY docker/php-fpm.d/www.conf /usr/local/etc/php-fpm.d/www.conf
+# Создаем пользователя приложения
+RUN addgroup -g 1000 www && \
+    adduser -u 1000 -G www -s /bin/sh -D www
 
-# Копируем супервизор для управления процессами
-COPY docker/supervisor/supervisord.conf /etc/supervisor/supervisord.conf
-COPY docker/supervisor/conf.d/ /etc/supervisor/conf.d/
+# Настраиваем права
+RUN mkdir -p /var/www/html && \
+    chown -R www:www /var/www && \
+    chmod -R 755 /var/www
 
-# Устанавливаем корректные права
-RUN chown -R appuser:appuser /var/www && \
-    chmod 755 /var/www
+# Копируем конфигурационные файлы
+COPY php.ini /usr/local/etc/php/php.ini
+COPY opcache.ini /usr/local/etc/php/conf.d/opcache.ini
 
-# Копируем установленные зависимости из builder stage
-COPY --from=builder /var/www/vendor /var/www/vendor
+# Переключаемся на пользователя приложения
+USER www
 
-# Копируем исходный код приложения
-COPY --chown=appuser:appuser . /var/www
+# Рабочая директория
+WORKDIR /var/www/html
 
-# Копируем autoload файлы
-COPY --from=builder /var/www/composer.* /var/www/
-
-# Генерируем оптимизированный автозагрузчик
-RUN composer dump-autoload --optimize --no-dev
-
-# Переключаемся на не-root пользователя
-USER appuser
-
-# Настраиваем рабочую директорию
-WORKDIR /var/www
-
-# Настройка здоровья контейнера
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:9000/status || exit 1
-
-# Оптимизация PHP для production
-# Копируем production конфигурации
-COPY docker/php/prod.ini /usr/local/etc/php/conf.d/prod.ini
-
-# Создаем volume для сессий и кэша
-VOLUME ["/var/www/storage", "/var/www/bootstrap/cache"]
-
-# Указываем порт (для PHP-FPM это не обязательно, но полезно для документации)
+# Открываем порт PHP-FPM
 EXPOSE 9000
 
-# Указываем entrypoint и команду
-ENTRYPOINT ["/usr/bin/supervisord"]
-CMD ["-c", "/etc/supervisor/supervisord.conf"]
+# Запускаем PHP-FPM
+CMD ["php-fpm", "-F"]
